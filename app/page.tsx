@@ -12,6 +12,7 @@ export default function Home() {
   const [password, setPassword] = useState('')
   const [classes, setClasses] = useState<any[]>([])
   const [bookings, setBookings] = useState<any[]>([])
+  const [waitlist, setWaitlist] = useState<any[]>([])
   const [credits, setCredits] = useState<number>(0)
   const [passId, setPassId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -19,6 +20,10 @@ export default function Home() {
   useEffect(() => {
     checkUser()
   }, [])
+
+  // =========================
+  // 🔐 AUTH
+  // =========================
 
   const checkUser = async () => {
     const { data } = await supabase.auth.getUser()
@@ -29,6 +34,7 @@ export default function Home() {
       await loadClasses()
       await loadBookings(currentUser.id)
       await loadCredits(currentUser.id)
+      await loadWaitlist(currentUser.id)
     }
   }
 
@@ -48,6 +54,10 @@ export default function Home() {
     setBookings([])
     setCredits(0)
   }
+
+  // =========================
+  // 📦 LOAD DATA
+  // =========================
 
   const loadClasses = async () => {
     const { data } = await supabase
@@ -69,6 +79,16 @@ export default function Home() {
     setBookings(data || [])
   }
 
+  const loadWaitlist = async (userId: string) => {
+    const { data } = await supabase
+      .from('waitlist_entries')
+      .select('*')
+      .eq('tenant_id', TENANT_ID)
+      .eq('user_id', userId)
+
+    setWaitlist(data || [])
+  }
+
   const loadCredits = async (userId: string) => {
     const { data } = await supabase
       .from('passes')
@@ -82,6 +102,24 @@ export default function Home() {
       setCredits(data.remaining_credits)
       setPassId(data.id)
     }
+  }
+
+  // =========================
+  // 🧠 HELPERS
+  // =========================
+
+  const formatDateTime = (dateString: string) => {
+    const d = new Date(dateString)
+
+    const weekday = d.toLocaleDateString('nl-NL', { weekday: 'short' })
+    const day = d.getDate()
+    const month = d.toLocaleDateString('en-GB', { month: 'short' }) // Apr, May etc
+    const time = d.toLocaleTimeString('nl-NL', {
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+
+    return `${weekday} ${day} ${month} ${time}`
   }
 
   const getBooking = (offeringId: string) => {
@@ -102,6 +140,14 @@ export default function Home() {
   const isFull = (offering: any) => {
     return getBookedCount(offering.id) >= offering.capacity
   }
+
+  const isWaitlisted = (offeringId: string) => {
+    return waitlist.find((w) => w.offering_id === offeringId)
+  }
+
+  // =========================
+  // 📅 BOOK
+  // =========================
 
   const book = async (offering: any) => {
     if (!user) return
@@ -137,7 +183,6 @@ export default function Home() {
       })
     }
 
-    // credit afboeken
     await supabase
       .from('passes')
       .update({
@@ -149,6 +194,10 @@ export default function Home() {
     await loadCredits(user.id)
     setBusyId(null)
   }
+
+  // =========================
+  // ❌ CANCEL
+  // =========================
 
   const unsubscribe = async (offeringId: string) => {
     const booking = getBooking(offeringId)
@@ -170,7 +219,6 @@ export default function Home() {
       })
       .eq('id', booking.id)
 
-    // credit teruggeven als op tijd
     if (hoursBefore > FREE_CANCEL_HOURS) {
       await supabase
         .from('passes')
@@ -184,6 +232,41 @@ export default function Home() {
     await loadCredits(user.id)
     setBusyId(null)
   }
+
+  // =========================
+  // 🟠 WAITLIST
+  // =========================
+
+  const joinWaitlist = async (offeringId: string) => {
+    if (!user) return
+
+    setBusyId(offeringId)
+
+    const existing = isWaitlisted(offeringId)
+    if (existing) {
+      setBusyId(null)
+      return
+    }
+
+    const { error } = await supabase.from('waitlist_entries').insert({
+      offering_id: offeringId,
+      user_id: user.id,
+      tenant_id: TENANT_ID,
+    })
+
+    if (error) {
+      alert(error.message)
+      setBusyId(null)
+      return
+    }
+
+    await loadWaitlist(user.id)
+    setBusyId(null)
+  }
+
+  // =========================
+  // 🔐 LOGIN VIEW
+  // =========================
 
   if (!user) {
     return (
@@ -213,6 +296,10 @@ export default function Home() {
     )
   }
 
+  // =========================
+  // 📅 UI
+  // =========================
+
   return (
     <div className="p-10">
       <div className="flex justify-between mb-4">
@@ -237,7 +324,8 @@ export default function Home() {
         return (
           <div key={c.id} className="border p-4 mb-2">
             <div className="font-bold">{c.title}</div>
-            <div>{new Date(c.start_time).toLocaleString()}</div>
+
+            <div>{formatDateTime(c.start_time)}</div>
 
             <div className="text-sm mt-1">
               {getBookedCount(c.id)} / {c.capacity} deelnemers
@@ -252,12 +340,19 @@ export default function Home() {
                 {busy ? 'Bezig...' : 'Uitschrijven'}
               </button>
             ) : full ? (
-              <button
-                className="bg-gray-400 text-white px-3 py-1 mt-2"
-                disabled
-              >
-                Vol
-              </button>
+              isWaitlisted(c.id) ? (
+                <button className="bg-orange-400 text-white px-3 py-1 mt-2" disabled>
+                  Op wachtlijst
+                </button>
+              ) : (
+                <button
+                  className="bg-orange-600 text-white px-3 py-1 mt-2"
+                  disabled={busy}
+                  onClick={() => joinWaitlist(c.id)}
+                >
+                  {busy ? 'Bezig...' : 'Wachtlijst'}
+                </button>
+              )
             ) : (
               <button
                 className="bg-green-600 text-white px-3 py-1 mt-2"
