@@ -5,50 +5,26 @@ import { supabase } from '@/lib/supabaseClient'
 
 const TENANT_ID = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
 
-type AppUser = {
-  id: string
-  email?: string
-}
-
-type Offering = {
-  id: string
-  title: string
-  start_time: string
-}
-
-type Booking = {
-  id: string
-  offering_id: string
-  status: string
-}
-
 export default function Home() {
-  const [user, setUser] = useState<AppUser | null>(null)
+  const [user, setUser] = useState<any>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [classes, setClasses] = useState<Offering[]>([])
-  const [bookings, setBookings] = useState<Booking[]>([])
-  const [busyOfferingId, setBusyOfferingId] = useState<string | null>(null)
+  const [classes, setClasses] = useState<any[]>([])
+  const [bookings, setBookings] = useState<any[]>([])
+  const [busyId, setBusyId] = useState<string | null>(null)
 
   useEffect(() => {
     checkUser()
   }, [])
 
   const checkUser = async () => {
-    const { data, error } = await supabase.auth.getUser()
-    if (error) {
-      console.error(error)
-      return
-    }
-
+    const { data } = await supabase.auth.getUser()
     const currentUser = data.user
-      ? { id: data.user.id, email: data.user.email ?? undefined }
-      : null
-
     setUser(currentUser)
 
     if (currentUser) {
-      await Promise.all([loadClasses(), loadBookings(currentUser.id)])
+      loadClasses()
+      loadBookings(currentUser.id)
     }
   }
 
@@ -60,10 +36,9 @@ export default function Home() {
 
     if (error) {
       alert(error.message)
-      return
+    } else {
+      checkUser()
     }
-
-    await checkUser()
   }
 
   const logout = async () => {
@@ -73,75 +48,83 @@ export default function Home() {
   }
 
   const loadClasses = async () => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('offerings')
-      .select('id, title, start_time')
+      .select('*')
       .eq('tenant_id', TENANT_ID)
       .order('start_time')
 
-    if (error) {
-      console.error(error)
-      alert(error.message)
-      return
-    }
-
-    setClasses((data as Offering[]) || [])
+    setClasses(data || [])
   }
 
   const loadBookings = async (userId: string) => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('bookings')
-      .select('id, offering_id, status')
+      .select('*')
       .eq('tenant_id', TENANT_ID)
       .eq('user_id', userId)
-      .in('status', ['booked', 'attended'])
 
-    if (error) {
-      console.error(error)
-      alert(error.message)
-      return
-    }
-
-    setBookings((data as Booking[]) || [])
+    setBookings(data || [])
   }
 
-  const getBookingForOffering = (offeringId: string) => {
-    return bookings.find((b) => b.offering_id === offeringId) || null
+  const getBooking = (offeringId: string) => {
+    return bookings.find((b) => b.offering_id === offeringId)
   }
 
   const isBooked = (offeringId: string) => {
-    return !!getBookingForOffering(offeringId)
+    const b = getBooking(offeringId)
+    return b && b.status === 'booked'
   }
 
   const book = async (offeringId: string) => {
     if (!user) return
 
-    setBusyOfferingId(offeringId)
+    setBusyId(offeringId)
 
-    const { error } = await supabase.from('bookings').insert({
-      offering_id: offeringId,
-      user_id: user.id,
-      tenant_id: TENANT_ID,
-      status: 'booked',
-    })
+    const existing = getBooking(offeringId)
 
-    setBusyOfferingId(null)
+    if (existing) {
+      // 🔁 HERINSCHRIJVEN
+      const { error } = await supabase
+        .from('bookings')
+        .update({
+          status: 'booked',
+          cancelled_at: null,
+        })
+        .eq('id', existing.id)
 
-    if (error) {
-      alert(error.message)
-      return
+      if (error) {
+        alert(error.message)
+        setBusyId(null)
+        return
+      }
+    } else {
+      // ➕ NIEUWE BOOKING
+      const { error } = await supabase.from('bookings').insert({
+        offering_id: offeringId,
+        user_id: user.id,
+        tenant_id: TENANT_ID,
+        status: 'booked',
+      })
+
+      if (error) {
+        alert(error.message)
+        setBusyId(null)
+        return
+      }
     }
 
     await loadBookings(user.id)
+    setBusyId(null)
   }
 
   const unsubscribe = async (offeringId: string) => {
     if (!user) return
 
-    const booking = getBookingForOffering(offeringId)
+    const booking = getBooking(offeringId)
     if (!booking) return
 
-    setBusyOfferingId(offeringId)
+    setBusyId(offeringId)
 
     const { error } = await supabase
       .from('bookings')
@@ -151,16 +134,17 @@ export default function Home() {
       })
       .eq('id', booking.id)
 
-    setBusyOfferingId(null)
-
     if (error) {
       alert(error.message)
+      setBusyId(null)
       return
     }
 
     await loadBookings(user.id)
+    setBusyId(null)
   }
 
+  // 🔐 LOGIN VIEW
   if (!user) {
     return (
       <div className="p-10 max-w-md mx-auto">
@@ -169,7 +153,6 @@ export default function Home() {
         <input
           className="border p-2 w-full mb-2"
           placeholder="Email"
-          value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
 
@@ -177,7 +160,6 @@ export default function Home() {
           className="border p-2 w-full mb-2"
           placeholder="Password"
           type="password"
-          value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
 
@@ -191,9 +173,10 @@ export default function Home() {
     )
   }
 
+  // 📅 ROOSTER VIEW
   return (
     <div className="p-10">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex justify-between mb-4">
         <h1 className="text-xl">Rooster</h1>
         <button
           className="bg-gray-600 text-white px-3 py-1"
@@ -205,7 +188,7 @@ export default function Home() {
 
       {classes.map((c) => {
         const booked = isBooked(c.id)
-        const busy = busyOfferingId === c.id
+        const busy = busyId === c.id
 
         return (
           <div key={c.id} className="border p-4 mb-2">
@@ -214,7 +197,7 @@ export default function Home() {
 
             {booked ? (
               <button
-                className="bg-red-600 text-white px-3 py-1 mt-2 disabled:opacity-50"
+                className="bg-red-600 text-white px-3 py-1 mt-2"
                 disabled={busy}
                 onClick={() => unsubscribe(c.id)}
               >
@@ -222,7 +205,7 @@ export default function Home() {
               </button>
             ) : (
               <button
-                className="bg-green-600 text-white px-3 py-1 mt-2 disabled:opacity-50"
+                className="bg-green-600 text-white px-3 py-1 mt-2"
                 disabled={busy}
                 onClick={() => book(c.id)}
               >
