@@ -8,6 +8,7 @@ export default function Home() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [classes, setClasses] = useState<any[]>([])
+  const [bookings, setBookings] = useState<any[]>([])
 
   useEffect(() => {
     checkUser()
@@ -17,7 +18,10 @@ export default function Home() {
     const { data } = await supabase.auth.getUser()
     setUser(data.user)
 
-    if (data.user) loadClasses()
+    if (data.user) {
+      loadClasses()
+      loadBookings(data.user.id)
+    }
   }
 
   const login = async () => {
@@ -42,16 +46,34 @@ export default function Home() {
     setClasses(data || [])
   }
 
+  const loadBookings = async (userId: string) => {
+    const { data } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('user_id', userId)
+
+    setBookings(data || [])
+  }
+
+  const isBooked = (offeringId: string) => {
+    return bookings.some((b) => b.offering_id === offeringId)
+  }
+
   const book = async (offeringId: string) => {
     const { data } = await supabase.auth.getUser()
 
-    await supabase.from('bookings').insert({
+    const { error } = await supabase.from('bookings').insert({
       offering_id: offeringId,
       user_id: data.user?.id,
       tenant_id: '3b71f443-e5a2-4187-9c04-76f72dd619f6'
     })
 
-    alert('Booked!')
+    if (!error) {
+      alert('Booked!')
+      loadBookings(data.user!.id)
+    } else {
+      alert(error.message)
+    }
   }
 
   if (!user) {
@@ -86,19 +108,32 @@ export default function Home() {
     <div className="p-10">
       <h1 className="text-xl mb-4">Rooster</h1>
 
-      {classes.map((c) => (
-        <div key={c.id} className="border p-4 mb-2">
-          <div className="font-bold">{c.title}</div>
-          <div>{new Date(c.start_time).toLocaleString()}</div>
+      {classes.map((c) => {
+        const booked = isBooked(c.id)
 
-          <button
-            className="bg-green-600 text-white px-3 py-1 mt-2"
-            onClick={() => book(c.id)}
-          >
-            Boek
-          </button>
-        </div>
-      ))}
+        return (
+          <div key={c.id} className="border p-4 mb-2">
+            <div className="font-bold">{c.title}</div>
+            <div>{new Date(c.start_time).toLocaleString()}</div>
+
+            {booked ? (
+              <button
+                className="bg-gray-400 text-white px-3 py-1 mt-2 cursor-not-allowed"
+                disabled
+              >
+                Ingeschreven
+              </button>
+            ) : (
+              <button
+                className="bg-green-600 text-white px-3 py-1 mt-2"
+                onClick={() => book(c.id)}
+              >
+                Boek
+              </button>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
