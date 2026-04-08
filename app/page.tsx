@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabaseClient'
 
 const TENANT_ID = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
 const FREE_CANCEL_HOURS = 6
+const PROMOTE_LIMIT_HOURS = 1
 
 export default function Home() {
   const [user, setUser] = useState<any>(null)
@@ -113,7 +114,7 @@ export default function Home() {
 
     const weekday = d.toLocaleDateString('nl-NL', { weekday: 'short' })
     const day = d.getDate()
-    const month = d.toLocaleDateString('en-GB', { month: 'short' }) // Apr, May etc
+    const month = d.toLocaleDateString('en-GB', { month: 'short' })
     const time = d.toLocaleTimeString('nl-NL', {
       hour: 'numeric',
       minute: '2-digit',
@@ -143,6 +144,41 @@ export default function Home() {
 
   const isWaitlisted = (offeringId: string) => {
     return waitlist.find((w) => w.offering_id === offeringId)
+  }
+
+  // =========================
+  // 🚀 AUTO PROMOTE
+  // =========================
+
+  const autoPromote = async (offering: any) => {
+    const hoursBefore =
+      (new Date(offering.start_time).getTime() - new Date().getTime()) /
+      3600000
+
+    if (hoursBefore < PROMOTE_LIMIT_HOURS) return
+
+    const { data: next } = await supabase
+      .from('waitlist_entries')
+      .select('*')
+      .eq('offering_id', offering.id)
+      .eq('tenant_id', TENANT_ID)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (!next) return
+
+    await supabase.from('bookings').insert({
+      offering_id: offering.id,
+      user_id: next.user_id,
+      tenant_id: TENANT_ID,
+      status: 'booked',
+    })
+
+    await supabase
+      .from('waitlist_entries')
+      .delete()
+      .eq('id', next.id)
   }
 
   // =========================
@@ -228,8 +264,12 @@ export default function Home() {
         .eq('id', passId)
     }
 
+    await autoPromote(offering)
+
     await loadBookings(user.id)
     await loadCredits(user.id)
+    await loadWaitlist(user.id)
+
     setBusyId(null)
   }
 
