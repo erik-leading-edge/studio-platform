@@ -123,28 +123,30 @@ export default function Home() {
     return `${weekday} ${day} ${month} ${time}`
   }
 
-  const getBooking = (offeringId: string) => {
-    return bookings.find((b) => b.offering_id === offeringId)
+  const sendEmail = async (to: string, subject: string, body: string) => {
+    await supabase.from('email_queue').insert({
+      to_email: to,
+      subject,
+      body,
+    })
   }
 
-  const isBooked = (offeringId: string) => {
-    const b = getBooking(offeringId)
-    return b && b.status === 'booked'
-  }
+  const getBooking = (offeringId: string) =>
+    bookings.find((b) => b.offering_id === offeringId)
 
-  const getBookedCount = (offeringId: string) => {
-    return bookings.filter(
+  const isBooked = (offeringId: string) =>
+    getBooking(offeringId)?.status === 'booked'
+
+  const isWaitlisted = (offeringId: string) =>
+    waitlist.find((w) => w.offering_id === offeringId)
+
+  const getBookedCount = (offeringId: string) =>
+    bookings.filter(
       (b) => b.offering_id === offeringId && b.status === 'booked'
     ).length
-  }
 
-  const isFull = (offering: any) => {
-    return getBookedCount(offering.id) >= offering.capacity
-  }
-
-  const isWaitlisted = (offeringId: string) => {
-    return waitlist.find((w) => w.offering_id === offeringId)
-  }
+  const isFull = (offering: any) =>
+    getBookedCount(offering.id) >= offering.capacity
 
   // =========================
   // 🚀 AUTO PROMOTE
@@ -161,8 +163,7 @@ export default function Home() {
       .from('waitlist_entries')
       .select('*')
       .eq('offering_id', offering.id)
-      .eq('tenant_id', TENANT_ID)
-      .order('created_at', { ascending: true })
+      .order('created_at')
       .limit(1)
       .maybeSingle()
 
@@ -179,6 +180,15 @@ export default function Home() {
       .from('waitlist_entries')
       .delete()
       .eq('id', next.id)
+
+    // 📧 notificatie
+    await sendEmail(
+      user.email,
+      'Je bent geplaatst!',
+      `Je bent geplaatst voor ${offering.title} op ${formatDateTime(
+        offering.start_time
+      )}`
+    )
   }
 
   // =========================
@@ -221,10 +231,16 @@ export default function Home() {
 
     await supabase
       .from('passes')
-      .update({
-        remaining_credits: credits - 1,
-      })
+      .update({ remaining_credits: credits - 1 })
       .eq('id', passId)
+
+    await sendEmail(
+      user.email,
+      'Boeking bevestigd',
+      `Je hebt ${offering.title} geboekt op ${formatDateTime(
+        offering.start_time
+      )}`
+    )
 
     await loadBookings(user.id)
     await loadCredits(user.id)
@@ -258,11 +274,15 @@ export default function Home() {
     if (hoursBefore > FREE_CANCEL_HOURS) {
       await supabase
         .from('passes')
-        .update({
-          remaining_credits: credits + 1,
-        })
+        .update({ remaining_credits: credits + 1 })
         .eq('id', passId)
     }
+
+    await sendEmail(
+      user.email,
+      'Uitschrijving bevestigd',
+      `Je bent uitgeschreven voor ${offering.title}`
+    )
 
     await autoPromote(offering)
 
@@ -282,12 +302,6 @@ export default function Home() {
 
     setBusyId(offeringId)
 
-    const existing = isWaitlisted(offeringId)
-    if (existing) {
-      setBusyId(null)
-      return
-    }
-
     const { error } = await supabase.from('waitlist_entries').insert({
       offering_id: offeringId,
       user_id: user.id,
@@ -300,32 +314,34 @@ export default function Home() {
       return
     }
 
+    await sendEmail(
+      user.email,
+      'Op wachtlijst',
+      'Je staat op de wachtlijst'
+    )
+
     await loadWaitlist(user.id)
     setBusyId(null)
   }
 
   // =========================
-  // 🔐 LOGIN VIEW
+  // UI
   // =========================
 
   if (!user) {
     return (
       <div className="p-10 max-w-md mx-auto">
-        <h1 className="text-xl mb-4">Login</h1>
-
         <input
           className="border p-2 w-full mb-2"
           placeholder="Email"
           onChange={(e) => setEmail(e.target.value)}
         />
-
         <input
           className="border p-2 w-full mb-2"
           placeholder="Password"
           type="password"
           onChange={(e) => setPassword(e.target.value)}
         />
-
         <button
           className="bg-blue-600 text-white px-4 py-2"
           onClick={login}
@@ -336,25 +352,14 @@ export default function Home() {
     )
   }
 
-  // =========================
-  // 📅 UI
-  // =========================
-
   return (
     <div className="p-10">
       <div className="flex justify-between mb-4">
-        <h1 className="text-xl">Rooster</h1>
-        <button
-          className="bg-gray-600 text-white px-3 py-1"
-          onClick={logout}
-        >
-          Uitloggen
-        </button>
+        <h1>Rooster</h1>
+        <button onClick={logout}>Uitloggen</button>
       </div>
 
-      <div className="mb-4">
-        Credits: <strong>{credits}</strong>
-      </div>
+      <div>Credits: {credits}</div>
 
       {classes.map((c) => {
         const booked = isBooked(c.id)
@@ -363,44 +368,26 @@ export default function Home() {
 
         return (
           <div key={c.id} className="border p-4 mb-2">
-            <div className="font-bold">{c.title}</div>
-
+            <div>{c.title}</div>
             <div>{formatDateTime(c.start_time)}</div>
-
-            <div className="text-sm mt-1">
-              {getBookedCount(c.id)} / {c.capacity} deelnemers
+            <div>
+              {getBookedCount(c.id)} / {c.capacity}
             </div>
 
             {booked ? (
-              <button
-                className="bg-red-600 text-white px-3 py-1 mt-2"
-                disabled={busy}
-                onClick={() => unsubscribe(c.id)}
-              >
-                {busy ? 'Bezig...' : 'Uitschrijven'}
+              <button onClick={() => unsubscribe(c.id)}>
+                Uitschrijven
               </button>
             ) : full ? (
               isWaitlisted(c.id) ? (
-                <button className="bg-orange-400 text-white px-3 py-1 mt-2" disabled>
-                  Op wachtlijst
-                </button>
+                <button disabled>Op wachtlijst</button>
               ) : (
-                <button
-                  className="bg-orange-600 text-white px-3 py-1 mt-2"
-                  disabled={busy}
-                  onClick={() => joinWaitlist(c.id)}
-                >
-                  {busy ? 'Bezig...' : 'Wachtlijst'}
+                <button onClick={() => joinWaitlist(c.id)}>
+                  Wachtlijst
                 </button>
               )
             ) : (
-              <button
-                className="bg-green-600 text-white px-3 py-1 mt-2"
-                disabled={busy}
-                onClick={() => book(c)}
-              >
-                {busy ? 'Bezig...' : 'Boek'}
-              </button>
+              <button onClick={() => book(c)}>Boek</button>
             )}
           </div>
         )
