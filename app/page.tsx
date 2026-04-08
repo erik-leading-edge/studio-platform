@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 const TENANT_ID = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
+const FREE_CANCEL_HOURS = 6
 
 export default function Home() {
   const [user, setUser] = useState<any>(null)
@@ -11,6 +12,8 @@ export default function Home() {
   const [password, setPassword] = useState('')
   const [classes, setClasses] = useState<any[]>([])
   const [bookings, setBookings] = useState<any[]>([])
+  const [credits, setCredits] = useState<number>(0)
+  const [passId, setPassId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -23,8 +26,9 @@ export default function Home() {
     setUser(currentUser)
 
     if (currentUser) {
-      loadClasses()
-      loadBookings(currentUser.id)
+      await loadClasses()
+      await loadBookings(currentUser.id)
+      await loadCredits(currentUser.id)
     }
   }
 
@@ -42,6 +46,7 @@ export default function Home() {
     await supabase.auth.signOut()
     setUser(null)
     setBookings([])
+    setCredits(0)
   }
 
   const loadClasses = async () => {
@@ -62,6 +67,21 @@ export default function Home() {
       .eq('user_id', userId)
 
     setBookings(data || [])
+  }
+
+  const loadCredits = async (userId: string) => {
+    const { data } = await supabase
+      .from('passes')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('tenant_id', TENANT_ID)
+      .limit(1)
+      .single()
+
+    if (data) {
+      setCredits(data.remaining_credits)
+      setPassId(data.id)
+    }
   }
 
   const getBooking = (offeringId: string) => {
@@ -86,6 +106,11 @@ export default function Home() {
   const book = async (offering: any) => {
     if (!user) return
 
+    if (credits <= 0) {
+      alert('Geen credits beschikbaar')
+      return
+    }
+
     if (isFull(offering)) {
       alert('Les is vol')
       return
@@ -96,37 +121,32 @@ export default function Home() {
     const existing = getBooking(offering.id)
 
     if (existing) {
-      // heractiveren
-      const { error } = await supabase
+      await supabase
         .from('bookings')
         .update({
           status: 'booked',
           cancelled_at: null,
         })
         .eq('id', existing.id)
-
-      if (error) {
-        alert(error.message)
-        setBusyId(null)
-        return
-      }
     } else {
-      // nieuwe booking
-      const { error } = await supabase.from('bookings').insert({
+      await supabase.from('bookings').insert({
         offering_id: offering.id,
         user_id: user.id,
         tenant_id: TENANT_ID,
         status: 'booked',
       })
-
-      if (error) {
-        alert(error.message)
-        setBusyId(null)
-        return
-      }
     }
 
+    // credit afboeken
+    await supabase
+      .from('passes')
+      .update({
+        remaining_credits: credits - 1,
+      })
+      .eq('id', passId)
+
     await loadBookings(user.id)
+    await loadCredits(user.id)
     setBusyId(null)
   }
 
@@ -134,9 +154,15 @@ export default function Home() {
     const booking = getBooking(offeringId)
     if (!booking) return
 
+    const offering = classes.find((c) => c.id === offeringId)
+
+    const hoursBefore =
+      (new Date(offering.start_time).getTime() - new Date().getTime()) /
+      3600000
+
     setBusyId(offeringId)
 
-    const { error } = await supabase
+    await supabase
       .from('bookings')
       .update({
         status: 'cancelled',
@@ -144,13 +170,18 @@ export default function Home() {
       })
       .eq('id', booking.id)
 
-    if (error) {
-      alert(error.message)
-      setBusyId(null)
-      return
+    // credit teruggeven als op tijd
+    if (hoursBefore > FREE_CANCEL_HOURS) {
+      await supabase
+        .from('passes')
+        .update({
+          remaining_credits: credits + 1,
+        })
+        .eq('id', passId)
     }
 
     await loadBookings(user.id)
+    await loadCredits(user.id)
     setBusyId(null)
   }
 
@@ -194,6 +225,10 @@ export default function Home() {
         </button>
       </div>
 
+      <div className="mb-4">
+        Credits: <strong>{credits}</strong>
+      </div>
+
       {classes.map((c) => {
         const booked = isBooked(c.id)
         const full = isFull(c)
@@ -218,7 +253,7 @@ export default function Home() {
               </button>
             ) : full ? (
               <button
-                className="bg-gray-400 text-white px-3 py-1 mt-2 cursor-not-allowed"
+                className="bg-gray-400 text-white px-3 py-1 mt-2"
                 disabled
               >
                 Vol
