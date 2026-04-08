@@ -34,11 +34,8 @@ export default function Home() {
       password,
     })
 
-    if (error) {
-      alert(error.message)
-    } else {
-      checkUser()
-    }
+    if (error) alert(error.message)
+    else checkUser()
   }
 
   const logout = async () => {
@@ -76,15 +73,30 @@ export default function Home() {
     return b && b.status === 'booked'
   }
 
-  const book = async (offeringId: string) => {
+  const getBookedCount = (offeringId: string) => {
+    return bookings.filter(
+      (b) => b.offering_id === offeringId && b.status === 'booked'
+    ).length
+  }
+
+  const isFull = (offering: any) => {
+    return getBookedCount(offering.id) >= offering.capacity
+  }
+
+  const book = async (offering: any) => {
     if (!user) return
 
-    setBusyId(offeringId)
+    if (isFull(offering)) {
+      alert('Les is vol')
+      return
+    }
 
-    const existing = getBooking(offeringId)
+    setBusyId(offering.id)
+
+    const existing = getBooking(offering.id)
 
     if (existing) {
-      // 🔁 HERINSCHRIJVEN
+      // heractiveren
       const { error } = await supabase
         .from('bookings')
         .update({
@@ -99,9 +111,9 @@ export default function Home() {
         return
       }
     } else {
-      // ➕ NIEUWE BOOKING
+      // nieuwe booking
       const { error } = await supabase.from('bookings').insert({
-        offering_id: offeringId,
+        offering_id: offering.id,
         user_id: user.id,
         tenant_id: TENANT_ID,
         status: 'booked',
@@ -119,8 +131,6 @@ export default function Home() {
   }
 
   const unsubscribe = async (offeringId: string) => {
-    if (!user) return
-
     const booking = getBooking(offeringId)
     if (!booking) return
 
@@ -144,7 +154,6 @@ export default function Home() {
     setBusyId(null)
   }
 
-  // 🔐 LOGIN VIEW
   if (!user) {
     return (
       <div className="p-10 max-w-md mx-auto">
@@ -173,7 +182,6 @@ export default function Home() {
     )
   }
 
-  // 📅 ROOSTER VIEW
   return (
     <div className="p-10">
       <div className="flex justify-between mb-4">
@@ -188,12 +196,17 @@ export default function Home() {
 
       {classes.map((c) => {
         const booked = isBooked(c.id)
+        const full = isFull(c)
         const busy = busyId === c.id
 
         return (
           <div key={c.id} className="border p-4 mb-2">
             <div className="font-bold">{c.title}</div>
             <div>{new Date(c.start_time).toLocaleString()}</div>
+
+            <div className="text-sm mt-1">
+              {getBookedCount(c.id)} / {c.capacity} deelnemers
+            </div>
 
             {booked ? (
               <button
@@ -203,11 +216,18 @@ export default function Home() {
               >
                 {busy ? 'Bezig...' : 'Uitschrijven'}
               </button>
+            ) : full ? (
+              <button
+                className="bg-gray-400 text-white px-3 py-1 mt-2 cursor-not-allowed"
+                disabled
+              >
+                Vol
+              </button>
             ) : (
               <button
                 className="bg-green-600 text-white px-3 py-1 mt-2"
                 disabled={busy}
-                onClick={() => book(c.id)}
+                onClick={() => book(c)}
               >
                 {busy ? 'Bezig...' : 'Boek'}
               </button>
