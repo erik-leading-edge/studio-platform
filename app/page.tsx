@@ -3,24 +3,52 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
+const TENANT_ID = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
+
+type AppUser = {
+  id: string
+  email?: string
+}
+
+type Offering = {
+  id: string
+  title: string
+  start_time: string
+}
+
+type Booking = {
+  id: string
+  offering_id: string
+  status: string
+}
+
 export default function Home() {
-  const [user, setUser] = useState<any>(null)
+  const [user, setUser] = useState<AppUser | null>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [classes, setClasses] = useState<any[]>([])
-  const [bookings, setBookings] = useState<any[]>([])
+  const [classes, setClasses] = useState<Offering[]>([])
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [busyOfferingId, setBusyOfferingId] = useState<string | null>(null)
 
   useEffect(() => {
     checkUser()
   }, [])
 
   const checkUser = async () => {
-    const { data } = await supabase.auth.getUser()
-    setUser(data.user)
+    const { data, error } = await supabase.auth.getUser()
+    if (error) {
+      console.error(error)
+      return
+    }
 
-    if (data.user) {
-      loadClasses()
-      loadBookings(data.user.id)
+    const currentUser = data.user
+      ? { id: data.user.id, email: data.user.email ?? undefined }
+      : null
+
+    setUser(currentUser)
+
+    if (currentUser) {
+      await Promise.all([loadClasses(), loadBookings(currentUser.id)])
     }
   }
 
@@ -30,50 +58,107 @@ export default function Home() {
       password,
     })
 
-    if (!error) {
-      checkUser()
-    } else {
+    if (error) {
       alert(error.message)
+      return
     }
+
+    await checkUser()
+  }
+
+  const logout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+    setBookings([])
   }
 
   const loadClasses = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('offerings')
-      .select('*')
+      .select('id, title, start_time')
+      .eq('tenant_id', TENANT_ID)
       .order('start_time')
 
-    setClasses(data || [])
+    if (error) {
+      console.error(error)
+      alert(error.message)
+      return
+    }
+
+    setClasses((data as Offering[]) || [])
   }
 
   const loadBookings = async (userId: string) => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('bookings')
-      .select('*')
+      .select('id, offering_id, status')
+      .eq('tenant_id', TENANT_ID)
       .eq('user_id', userId)
+      .in('status', ['booked', 'attended'])
 
-    setBookings(data || [])
+    if (error) {
+      console.error(error)
+      alert(error.message)
+      return
+    }
+
+    setBookings((data as Booking[]) || [])
+  }
+
+  const getBookingForOffering = (offeringId: string) => {
+    return bookings.find((b) => b.offering_id === offeringId) || null
   }
 
   const isBooked = (offeringId: string) => {
-    return bookings.some((b) => b.offering_id === offeringId)
+    return !!getBookingForOffering(offeringId)
   }
 
   const book = async (offeringId: string) => {
-    const { data } = await supabase.auth.getUser()
+    if (!user) return
+
+    setBusyOfferingId(offeringId)
 
     const { error } = await supabase.from('bookings').insert({
       offering_id: offeringId,
-      user_id: data.user?.id,
-      tenant_id: '3b71f443-e5a2-4187-9c04-76f72dd619f6'
+      user_id: user.id,
+      tenant_id: TENANT_ID,
+      status: 'booked',
     })
 
-    if (!error) {
-      alert('Booked!')
-      loadBookings(data.user!.id)
-    } else {
+    setBusyOfferingId(null)
+
+    if (error) {
       alert(error.message)
+      return
     }
+
+    await loadBookings(user.id)
+  }
+
+  const unsubscribe = async (offeringId: string) => {
+    if (!user) return
+
+    const booking = getBookingForOffering(offeringId)
+    if (!booking) return
+
+    setBusyOfferingId(offeringId)
+
+    const { error } = await supabase
+      .from('bookings')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+      })
+      .eq('id', booking.id)
+
+    setBusyOfferingId(null)
+
+    if (error) {
+      alert(error.message)
+      return
+    }
+
+    await loadBookings(user.id)
   }
 
   if (!user) {
@@ -84,6 +169,7 @@ export default function Home() {
         <input
           className="border p-2 w-full mb-2"
           placeholder="Email"
+          value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
 
@@ -91,6 +177,7 @@ export default function Home() {
           className="border p-2 w-full mb-2"
           placeholder="Password"
           type="password"
+          value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
 
@@ -106,10 +193,19 @@ export default function Home() {
 
   return (
     <div className="p-10">
-      <h1 className="text-xl mb-4">Rooster</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl">Rooster</h1>
+        <button
+          className="bg-gray-600 text-white px-3 py-1"
+          onClick={logout}
+        >
+          Uitloggen
+        </button>
+      </div>
 
       {classes.map((c) => {
         const booked = isBooked(c.id)
+        const busy = busyOfferingId === c.id
 
         return (
           <div key={c.id} className="border p-4 mb-2">
@@ -118,17 +214,19 @@ export default function Home() {
 
             {booked ? (
               <button
-                className="bg-gray-400 text-white px-3 py-1 mt-2 cursor-not-allowed"
-                disabled
+                className="bg-red-600 text-white px-3 py-1 mt-2 disabled:opacity-50"
+                disabled={busy}
+                onClick={() => unsubscribe(c.id)}
               >
-                Ingeschreven
+                {busy ? 'Bezig...' : 'Uitschrijven'}
               </button>
             ) : (
               <button
-                className="bg-green-600 text-white px-3 py-1 mt-2"
+                className="bg-green-600 text-white px-3 py-1 mt-2 disabled:opacity-50"
+                disabled={busy}
                 onClick={() => book(c.id)}
               >
-                Boek
+                {busy ? 'Bezig...' : 'Boek'}
               </button>
             )}
           </div>
