@@ -9,9 +9,6 @@ export default function Home() {
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-
   const [classes, setClasses] = useState<any[]>([])
   const [bookings, setBookings] = useState<any[]>([])
   const [waitlist, setWaitlist] = useState<any[]>([])
@@ -55,31 +52,8 @@ export default function Home() {
     }
   }
 
-  // =========================
-  // AUTH
-  // =========================
-
-  const login = async () => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-
-    if (error) {
-      alert(error.message)
-      return
-    }
-
-    const { data } = await supabase.auth.getUser()
-    const u = data.user
-    setUser(u)
-
-    if (u) await loadAll(u.id)
-  }
-
-  const logout = async () => {
-    await supabase.auth.signOut()
-    setUser(null)
+  const refresh = async () => {
+    if (user) await loadAll(user.id)
   }
 
   // =========================
@@ -97,8 +71,11 @@ export default function Home() {
     })
   }
 
+  const getBooking = (id: string) =>
+    bookings.find((b) => b.offering_id === id)
+
   const isBooked = (id: string) =>
-    bookings.find((b) => b.offering_id === id && b.status === 'booked')
+    getBooking(id)?.status === 'booked'
 
   const isWaitlisted = (id: string) =>
     waitlist.find((w) => w.offering_id === id)
@@ -112,22 +89,41 @@ export default function Home() {
   // ACTIONS
   // =========================
 
-  const refresh = async () => {
-    if (user) await loadAll(user.id)
-  }
-
   const book = async (c: any) => {
-    if (credits <= 0) return alert('Geen credits')
+    if (credits <= 0) {
+      alert('Geen credits')
+      return
+    }
+
+    const existing = getBooking(c.id)
+
+    // ✅ AL GEBOEKT → niets doen
+    if (existing && existing.status === 'booked') {
+      return
+    }
 
     setBusyId(c.id)
 
-    await supabase.from('bookings').insert({
-      offering_id: c.id,
-      user_id: user.id,
-      tenant_id: TENANT_ID,
-      status: 'booked',
-    })
+    if (existing) {
+      // 🔁 HERINSCHRIJVEN
+      await supabase
+        .from('bookings')
+        .update({
+          status: 'booked',
+          cancelled_at: null,
+        })
+        .eq('id', existing.id)
+    } else {
+      // ➕ NIEUWE BOEKING
+      await supabase.from('bookings').insert({
+        offering_id: c.id,
+        user_id: user.id,
+        tenant_id: TENANT_ID,
+        status: 'booked',
+      })
+    }
 
+    // 💳 CREDIT AFBOEKEN (alleen als niet al booked)
     await supabase
       .from('passes')
       .update({ remaining_credits: credits - 1 })
@@ -138,22 +134,32 @@ export default function Home() {
   }
 
   const unsubscribe = async (c: any) => {
-    const b = bookings.find((x) => x.offering_id === c.id)
+    const booking = getBooking(c.id)
+    if (!booking) return
+
+    setBusyId(c.id)
 
     await supabase
       .from('bookings')
-      .update({ status: 'cancelled' })
-      .eq('id', b.id)
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+      })
+      .eq('id', booking.id)
 
+    // 💳 CREDIT TERUG
     await supabase
       .from('passes')
       .update({ remaining_credits: credits + 1 })
       .eq('id', passId)
 
     await refresh()
+    setBusyId(null)
   }
 
   const joinWaitlist = async (id: string) => {
+    if (isWaitlisted(id)) return
+
     await supabase.from('waitlist_entries').insert({
       offering_id: id,
       user_id: user.id,
@@ -164,12 +170,30 @@ export default function Home() {
   }
 
   // =========================
-  // UI STATES
+  // AUTH UI
   // =========================
+
+  const login = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    })
+
+    if (error) alert(error.message)
+    else init()
+  }
+
+  const logout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+  }
 
   if (loading) return <div className="p-10">Loading...</div>
 
   if (!user) {
+    let emailInput = ''
+    let passwordInput = ''
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F7F5F2]">
         <div className="bg-white p-8 rounded-2xl shadow w-full max-w-sm">
@@ -178,19 +202,19 @@ export default function Home() {
           <input
             className="border p-2 w-full mb-2 rounded"
             placeholder="Email"
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => (emailInput = e.target.value)}
           />
 
           <input
             className="border p-2 w-full mb-4 rounded"
             placeholder="Wachtwoord"
             type="password"
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => (passwordInput = e.target.value)}
           />
 
           <button
             className="w-full bg-[#1A3F78] text-white py-2 rounded-lg"
-            onClick={login}
+            onClick={() => login(emailInput, passwordInput)}
           >
             Inloggen
           </button>
@@ -207,7 +231,6 @@ export default function Home() {
     <div className="min-h-screen bg-[#F7F5F2] p-6">
       <div className="max-w-2xl mx-auto">
 
-        {/* HEADER */}
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-semibold text-gray-800">
             Yogastudio Sangha
@@ -221,12 +244,10 @@ export default function Home() {
           </button>
         </div>
 
-        {/* CREDITS */}
         <div className="mb-6 text-gray-600 text-sm">
           Credits: <span className="font-semibold">{credits}</span>
         </div>
 
-        {/* CLASSES */}
         <div className="space-y-4">
           {classes.map((c) => {
             const booked = isBooked(c.id)
@@ -238,7 +259,6 @@ export default function Home() {
                 key={c.id}
                 className="bg-white rounded-2xl p-5 shadow-sm border flex justify-between items-center"
               >
-                {/* LEFT */}
                 <div>
                   <div className="font-semibold text-lg text-gray-800">
                     {c.title}
@@ -253,13 +273,12 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* RIGHT CTA */}
                 <div>
                   {booked ? (
                     <button
                       onClick={() => unsubscribe(c)}
                       disabled={busy}
-                      className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm transition"
+                      className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg"
                     >
                       Uitschrijven
                     </button>
@@ -271,7 +290,7 @@ export default function Home() {
                     ) : (
                       <button
                         onClick={() => joinWaitlist(c.id)}
-                        className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg shadow-sm transition"
+                        className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg"
                       >
                         Wachtlijst
                       </button>
@@ -280,7 +299,7 @@ export default function Home() {
                     <button
                       onClick={() => book(c)}
                       disabled={busy}
-                      className="bg-[#1A3F78] hover:bg-[#16325f] text-white px-4 py-2 rounded-lg shadow-sm transition"
+                      className="bg-[#1A3F78] hover:bg-[#16325f] text-white px-4 py-2 rounded-lg"
                     >
                       Boek
                     </button>
