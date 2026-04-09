@@ -7,12 +7,21 @@ const TENANT_ID = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
 
 export default function Home() {
   const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+
   const [classes, setClasses] = useState<any[]>([])
   const [bookings, setBookings] = useState<any[]>([])
   const [waitlist, setWaitlist] = useState<any[]>([])
   const [credits, setCredits] = useState<number>(0)
   const [passId, setPassId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+
+  // =========================
+  // INIT
+  // =========================
 
   useEffect(() => {
     init()
@@ -23,13 +32,17 @@ export default function Home() {
     const u = data.user
     setUser(u)
 
-    if (!u) return
+    if (u) await loadAll(u.id)
 
+    setLoading(false)
+  }
+
+  const loadAll = async (userId: string) => {
     const [c, b, p, w] = await Promise.all([
       supabase.from('offerings').select('*').eq('tenant_id', TENANT_ID),
-      supabase.from('bookings').select('*').eq('user_id', u.id),
-      supabase.from('passes').select('*').eq('user_id', u.id).single(),
-      supabase.from('waitlist_entries').select('*').eq('user_id', u.id),
+      supabase.from('bookings').select('*').eq('user_id', userId),
+      supabase.from('passes').select('*').eq('user_id', userId).single(),
+      supabase.from('waitlist_entries').select('*').eq('user_id', userId),
     ])
 
     setClasses(c.data || [])
@@ -42,10 +55,36 @@ export default function Home() {
     }
   }
 
+  // =========================
+  // AUTH
+  // =========================
+
+  const login = async () => {
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    })
+
+    if (error) {
+      alert(error.message)
+      return
+    }
+
+    const { data } = await supabase.auth.getUser()
+    const u = data.user
+    setUser(u)
+
+    if (u) await loadAll(u.id)
+  }
+
   const logout = async () => {
     await supabase.auth.signOut()
-    location.reload()
+    setUser(null)
   }
+
+  // =========================
+  // HELPERS
+  // =========================
 
   const formatDate = (d: string) => {
     const date = new Date(d)
@@ -69,7 +108,17 @@ export default function Home() {
       (b) => b.offering_id === id && b.status === 'booked'
     ).length
 
+  // =========================
+  // ACTIONS
+  // =========================
+
+  const refresh = async () => {
+    if (user) await loadAll(user.id)
+  }
+
   const book = async (c: any) => {
+    if (credits <= 0) return alert('Geen credits')
+
     setBusyId(c.id)
 
     await supabase.from('bookings').insert({
@@ -84,7 +133,8 @@ export default function Home() {
       .update({ remaining_credits: credits - 1 })
       .eq('id', passId)
 
-    location.reload()
+    await refresh()
+    setBusyId(null)
   }
 
   const unsubscribe = async (c: any) => {
@@ -100,7 +150,7 @@ export default function Home() {
       .update({ remaining_credits: credits + 1 })
       .eq('id', passId)
 
-    location.reload()
+    await refresh()
   }
 
   const joinWaitlist = async (id: string) => {
@@ -110,10 +160,48 @@ export default function Home() {
       tenant_id: TENANT_ID,
     })
 
-    location.reload()
+    await refresh()
   }
 
-  if (!user) return <div className="p-10">Login nodig</div>
+  // =========================
+  // UI STATES
+  // =========================
+
+  if (loading) return <div className="p-10">Loading...</div>
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F7F5F2]">
+        <div className="bg-white p-8 rounded-2xl shadow w-full max-w-sm">
+          <h1 className="text-xl mb-4 font-semibold">Inloggen</h1>
+
+          <input
+            className="border p-2 w-full mb-2 rounded"
+            placeholder="Email"
+            onChange={(e) => setEmail(e.target.value)}
+          />
+
+          <input
+            className="border p-2 w-full mb-4 rounded"
+            placeholder="Wachtwoord"
+            type="password"
+            onChange={(e) => setPassword(e.target.value)}
+          />
+
+          <button
+            className="w-full bg-[#1A3F78] text-white py-2 rounded-lg"
+            onClick={login}
+          >
+            Inloggen
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // =========================
+  // MAIN UI
+  // =========================
 
   return (
     <div className="min-h-screen bg-[#F7F5F2] p-6">
@@ -170,6 +258,7 @@ export default function Home() {
                   {booked ? (
                     <button
                       onClick={() => unsubscribe(c)}
+                      disabled={busy}
                       className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm transition"
                     >
                       Uitschrijven
@@ -190,6 +279,7 @@ export default function Home() {
                   ) : (
                     <button
                       onClick={() => book(c)}
+                      disabled={busy}
                       className="bg-[#1A3F78] hover:bg-[#16325f] text-white px-4 py-2 rounded-lg shadow-sm transition"
                     >
                       Boek
