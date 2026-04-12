@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 export default function Page() {
-  const [user, setUser] = useState<any>(undefined) // 👈 belangrijk
+  const [user, setUser] = useState<any>(undefined)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
@@ -15,55 +15,20 @@ export default function Page() {
   const tenantId = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
 
   // =========================
-  // INIT + AUTH FIX
+  // INIT
   // =========================
 
   useEffect(() => {
-    let channel: any
-
     const init = async () => {
       const { data } = await supabase.auth.getSession()
       const u = data.session?.user || null
 
       setUser(u)
 
-      if (!u) return
-
-      await refresh(u)
-
-      channel = supabase
-        .channel('realtime-bookings')
-
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'bookings' },
-          () => refresh(u)
-        )
-
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'offerings' },
-          () => refresh(u)
-        )
-
-        .subscribe()
+      if (u) await refresh(u)
     }
 
     init()
-
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        const u = session?.user || null
-        setUser(u)
-
-        if (u) await refresh(u)
-      }
-    )
-
-    return () => {
-      if (channel) supabase.removeChannel(channel)
-      listener.subscription.unsubscribe()
-    }
   }, [])
 
   // =========================
@@ -75,6 +40,7 @@ export default function Page() {
       .from('offerings')
       .select('*')
       .eq('tenant_id', tenantId)
+      .order('start_time')
 
     const { data: b } = await supabase
       .from('bookings')
@@ -89,7 +55,9 @@ export default function Page() {
 
     setClasses(cls || [])
     setBookings(b || [])
-    setCredits(pass?.credits_remaining || 0)
+
+    // ✅ FIX: juiste veldnaam
+    setCredits(pass?.remaining_credits || 0)
   }
 
   // =========================
@@ -101,10 +69,8 @@ export default function Page() {
       email,
       password,
     })
-
-    if (error) {
-      alert(error.message)
-    }
+    if (error) alert(error.message)
+    else location.reload()
   }
 
   async function logout() {
@@ -133,15 +99,54 @@ export default function Page() {
   }
 
   // =========================
+  // ACTIONS
+  // =========================
+
+  async function bookClass(c: any) {
+    if (credits <= 0) return alert('Geen credits')
+
+    if (getActiveBooking(c.id)) return
+
+    await supabase.from('bookings').insert({
+      user_id: user.id,
+      offering_id: c.id,
+      status: 'booked',
+      tenant_id: tenantId,
+    })
+
+    await supabase
+      .from('passes')
+      .update({ remaining_credits: credits - 1 })
+      .eq('user_id', user.id)
+
+    await refresh(user)
+  }
+
+  async function cancelBooking(booking: any) {
+    await supabase
+      .from('bookings')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+      })
+      .eq('id', booking.id)
+
+    await supabase
+      .from('passes')
+      .update({ remaining_credits: credits + 1 })
+      .eq('user_id', user.id)
+
+    await refresh(user)
+  }
+
+  // =========================
   // UI STATES
   // =========================
 
-  // 🔄 loading
   if (user === undefined) {
     return <div className="p-10">Loading...</div>
   }
 
-  // 🔐 LOGIN SCHERM
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F7F5F2]">
@@ -173,38 +178,66 @@ export default function Page() {
   }
 
   // =========================
-  // MAIN UI
+  // MAIN UI (MOEIE VERSION)
   // =========================
 
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <div className="flex justify-between mb-4">
-        <h1 className="text-xl font-semibold">Rooster</h1>
-        <button onClick={logout}>Uitloggen</button>
+    <div className="min-h-screen bg-[#F7F5F2] p-6">
+      <div className="max-w-xl mx-auto">
+
+        <div className="flex justify-between mb-6">
+          <h1 className="text-xl font-semibold">
+            Yogastudio Sangha
+          </h1>
+
+          <button onClick={logout}>
+            Uitloggen
+          </button>
+        </div>
+
+        <div className="mb-4 text-gray-700">
+          Credits: {credits}
+        </div>
+
+        <div className="space-y-4">
+          {classes.map(c => {
+            const booking = getActiveBooking(c.id)
+
+            return (
+              <div
+                key={c.id}
+                className="bg-white rounded-2xl shadow-sm border p-5 flex justify-between items-center"
+              >
+                <div>
+                  <div className="font-semibold text-lg">
+                    {c.title}
+                  </div>
+
+                  <div className="text-gray-500 text-sm">
+                    {formatDate(c.start_time)}
+                  </div>
+                </div>
+
+                {booking ? (
+                  <button
+                    onClick={() => cancelBooking(booking)}
+                    className="bg-red-500 text-white px-4 py-2 rounded-xl"
+                  >
+                    Uitschrijven
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => bookClass(c)}
+                    className="bg-blue-600 text-white px-4 py-2 rounded-xl"
+                  >
+                    Boek
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
-
-      <div className="mb-4">Credits: {credits}</div>
-
-      {classes.map(c => {
-        const booking = getActiveBooking(c.id)
-
-        return (
-          <div key={c.id} className="border p-4 mb-2">
-            <div>{c.title}</div>
-            <div>{formatDate(c.start_time)}</div>
-
-            {booking ? (
-              <button className="bg-red-500 text-white px-3 py-1 mt-2">
-                Uitschrijven
-              </button>
-            ) : (
-              <button className="bg-blue-600 text-white px-3 py-1 mt-2">
-                Boek
-              </button>
-            )}
-          </div>
-        )
-      })}
     </div>
   )
 }
