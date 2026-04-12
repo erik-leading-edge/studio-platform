@@ -12,17 +12,67 @@ export default function Page() {
 
   const tenantId = '3b71f443-e5a2-4187-9c04-76f72dd619f6'
 
+  // =========================
+  // INIT + REALTIME
+  // =========================
+
   useEffect(() => {
+    let channel: any
+
     const init = async () => {
       const { data } = await supabase.auth.getUser()
       if (!data.user) return
+
       setUser(data.user)
       await refresh(data.user)
+
+      channel = supabase
+        .channel('realtime-bookings')
+
+        // BOOKINGS
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'bookings' },
+          () => {
+            refresh(data.user)
+          }
+        )
+
+        // WAITLIST
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'waitlist_entries' },
+          () => {
+            refresh(data.user)
+          }
+        )
+
+        // OFFERINGS (toegevoegd)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'offerings' },
+          () => {
+            refresh(data.user)
+          }
+        )
+
+        .subscribe()
     }
+
     init()
+
+    return () => {
+      if (channel) supabase.removeChannel(channel)
+    }
   }, [])
 
+  // =========================
+  // DATA
+  // =========================
+
   async function refresh(u: any) {
+    if (!u) return
+
     const { data: cls } = await supabase
       .from('offerings')
       .select('*')
@@ -45,32 +95,76 @@ export default function Page() {
     setCredits(pass?.credits_remaining || 0)
   }
 
-  // 🔒 alleen actieve booking
+  // =========================
+  // HELPERS
+  // =========================
+
   function getActiveBooking(offeringId: string) {
     return bookings.find(
       b => b.offering_id === offeringId && b.status === 'booked'
     )
   }
 
+  function formatDate(dt: string) {
+    const d = new Date(dt)
+    return d.toLocaleString('nl-NL', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+  }
+
+  // =========================
+  // 📅 KALENDER (ICS)
+  // =========================
+
+  const createICS = (c: any) => {
+    const start = new Date(c.start_time)
+    const end = new Date(start.getTime() + 60 * 60 * 1000)
+
+    const format = (d: Date) =>
+      d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
+
+    return `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:${c.title}
+DTSTART:${format(start)}
+DTEND:${format(end)}
+DESCRIPTION:Yogastudio Sangha
+END:VEVENT
+END:VCALENDAR`
+  }
+
+  const downloadICS = (c: any) => {
+    const blob = new Blob([createICS(c)], { type: 'text/calendar' })
+    const url = window.URL.createObjectURL(blob)
+
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${c.title}.ics`
+    a.click()
+  }
+
+  // =========================
+  // ACTIONS
+  // =========================
+
   async function bookClass(offeringId: string) {
     if (!user) return
 
-    // 🔒 idempotent guard (frontend)
-    if (getActiveBooking(offeringId)) {
-      console.log('Already booked → ignore')
-      return
-    }
+    if (getActiveBooking(offeringId)) return
 
     setLoadingAction(offeringId)
 
     try {
-      // check credits
       if (credits <= 0) {
         alert('Geen credits')
         return
       }
 
-      // insert booking
       const { error } = await supabase.from('bookings').insert({
         user_id: user.id,
         offering_id: offeringId,
@@ -78,16 +172,11 @@ export default function Page() {
         tenant_id: tenantId,
       })
 
-      // 🔒 backend guard (constraint)
       if (error) {
-        if (error.message.includes('bookings_active_unique')) {
-          console.log('Duplicate prevented by DB')
-          return
-        }
+        if (error.message.includes('bookings_unique_active')) return
         throw error
       }
 
-      // credit verminderen
       await supabase
         .from('passes')
         .update({ credits_remaining: credits - 1 })
@@ -108,7 +197,6 @@ export default function Page() {
     setLoadingAction(booking.offering_id)
 
     try {
-      // status wijzigen (historie blijft!)
       await supabase
         .from('bookings')
         .update({
@@ -117,7 +205,6 @@ export default function Page() {
         })
         .eq('id', booking.id)
 
-      // credit terug
       await supabase
         .from('passes')
         .update({ credits_remaining: credits + 1 })
@@ -132,16 +219,9 @@ export default function Page() {
     }
   }
 
-  function formatDate(dt: string) {
-    const d = new Date(dt)
-    return d.toLocaleString('nl-NL', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      hour: 'numeric',
-      minute: '2-digit',
-    })
-  }
+  // =========================
+  // UI
+  // =========================
 
   if (!user) {
     return <div className="p-10">Login nodig</div>
@@ -150,6 +230,7 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-xl mx-auto">
+
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-semibold">
             Yogastudio Sangha
@@ -173,36 +254,50 @@ export default function Page() {
             return (
               <div
                 key={c.id}
-                className="bg-white rounded-2xl shadow-sm border p-5 flex justify-between items-center"
+                className="bg-white rounded-2xl shadow-sm border p-5"
               >
-                <div>
-                  <div className="font-semibold text-lg">
-                    {c.title}
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-semibold text-lg">
+                      {c.title}
+                    </div>
+                    <div className="text-gray-500 text-sm">
+                      {formatDate(c.start_time)}
+                    </div>
                   </div>
-                  <div className="text-gray-500 text-sm">
-                    {formatDate(c.start_time)}
+
+                  <div>
+                    {myBooking ? (
+                      <button
+                        disabled={loadingAction === c.id}
+                        onClick={() => cancelBooking(myBooking)}
+                        className="bg-red-500 text-white px-4 py-2 rounded-xl"
+                      >
+                        Uitschrijven
+                      </button>
+                    ) : (
+                      <button
+                        disabled={loadingAction === c.id}
+                        onClick={() => bookClass(c.id)}
+                        className="bg-blue-600 text-white px-4 py-2 rounded-xl"
+                      >
+                        Boek
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                <div>
-                  {myBooking ? (
+                {/* 📅 Alleen tonen als geboekt */}
+                {myBooking && (
+                  <div className="mt-3 text-right">
                     <button
-                      disabled={loadingAction === c.id}
-                      onClick={() => cancelBooking(myBooking)}
-                      className="bg-red-500 text-white px-4 py-2 rounded-xl"
+                      onClick={() => downloadICS(c)}
+                      className="text-xs text-gray-500 underline hover:text-gray-700"
                     >
-                      Uitschrijven
+                      Zet in agenda
                     </button>
-                  ) : (
-                    <button
-                      disabled={loadingAction === c.id}
-                      onClick={() => bookClass(c.id)}
-                      className="bg-blue-600 text-white px-4 py-2 rounded-xl"
-                    >
-                      Boek
-                    </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             )
           })}
