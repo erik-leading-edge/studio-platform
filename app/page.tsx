@@ -17,54 +17,65 @@ export default function Page() {
   // =========================
 
   useEffect(() => {
-    let channel: any
+  let channel: any
 
-    const init = async () => {
-      const { data } = await supabase.auth.getUser()
-      if (!data.user) return
+  const init = async () => {
+    // 🔥 gebruik session (niet getUser)
+    const { data: sessionData } = await supabase.auth.getSession()
+    const u = sessionData.session?.user
 
-      setUser(data.user)
-      await refresh(data.user)
-
-      channel = supabase
-        .channel('realtime-bookings')
-
-        // BOOKINGS
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'bookings' },
-          () => {
-            refresh(data.user)
-          }
-        )
-
-        // WAITLIST
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'waitlist_entries' },
-          () => {
-            refresh(data.user)
-          }
-        )
-
-        // OFFERINGS (toegevoegd)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'offerings' },
-          () => {
-            refresh(data.user)
-          }
-        )
-
-        .subscribe()
+    if (!u) {
+      setUser(null)
+      return
     }
 
-    init()
+    setUser(u)
+    await refresh(u)
 
-    return () => {
-      if (channel) supabase.removeChannel(channel)
+    // 🔥 realtime pas starten NA user
+    channel = supabase
+      .channel('realtime-bookings')
+
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bookings' },
+        () => refresh(u)
+      )
+
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'waitlist_entries' },
+        () => refresh(u)
+      )
+
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'offerings' },
+        () => refresh(u)
+      )
+
+      .subscribe()
+  }
+
+  init()
+
+  // 🔥 luister naar login/logout (CRUCIAAL)
+  const { data: listener } = supabase.auth.onAuthStateChange(
+    async (_event, session) => {
+      const u = session?.user || null
+      setUser(u)
+
+      if (u) {
+        await refresh(u)
+      }
     }
-  }, [])
+  )
+
+  return () => {
+    if (channel) supabase.removeChannel(channel)
+    listener.subscription.unsubscribe()
+  }
+}, [])
 
   // =========================
   // DATA
